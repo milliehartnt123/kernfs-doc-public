@@ -1,0 +1,990 @@
+=============================================================
+How to Easily Create a Simple Filesystem Using the Kernfs API
+=============================================================
+
+*******************
+kernfs API Overview
+*******************
+The kernfs API provides a set of functions that can be used internally by various kernel subsystems or by an out-of-tree module to implement a simple filesystem that bridges userspace with kernel space without having to be familiar with the Linux Virtual File System (VFS). The kernfs functions handle all of the low-level programming for you. 
+
+One of the uses for the kernfs API is to automatically populate a directory with one or more files when the directory is created.
+
+The source code is in the linux/fs/kernfs directory and includes the following files.
+
+.. list-table::
+   :widths: 20 40
+   :header-rows: 1
+   
+   * - File
+     - Purpose
+	 
+   * - Kconfig
+     - Used to generate the configuration file for kernfs
+   * - Makefile
+     - The makefile for compiling and building the kernfs code.
+   * - dir.c 
+     - Functions to create and manipulate directories and subdirectories. Defines operations on directories and on directory inodes.
+   * - file.c
+     - Functions to create and manipulate files. Defines available file operations.
+   * - inode.c
+     - Functions to create or get an inode, define operations on inodes, and set attributes. Each file has a unique inode.
+   * - kernfs-internal.h
+     - Header file defining kernfs-specific structures and variables.
+   * - mount.c
+     - Functions to create the filesystem.	 
+   * - symlink.c
+     - Functions to create a parent directory for the symlink and point the symlink to a target node.
+	 
+****************************	 
+Filesystem Metadata Overview
+****************************
+
+Most filesystems interface with applications in the userspace through the Virtual File System (VFS), and through devices using the device drivers. The VFS, filesystems, and device drivers all live in the kernel space.
+
++------------------------------+--------------------------------------------------------+
+|User space                    |    Kernel space                                        |
++====================+=========+======+========+==============+=========+===============+
+| User Applications  |``<-->`` | VFS  |``<-->``| Filesystem   |``<-->`` | Device Drivers|
++--------------------+---------+------+--------+--------------+---------+---------------+
+
+While the kernfs API provides functions that manipulate the filesystem metadata for you, it is important to be aware of the different structures that are being passed or returned by those functions.
+
+Linux filesystems, including those created based on kernfs, are composed of the following abstract parts, as shown:
+
++------------------------+---------+-------------------+----------+--------------------+--------+-----------------+
+| **superblock object**  | ``<--`` | **inode object**  | ``<--``  | **dentry object**  | ``<--``| **file object** |
+|                        +---------+-------------------+----------+--------------------+--------+-----------------+
+|                        |                                                                                        |
+|                        |                                                                                        |
+|                        +---------+-------------------+----------+--------------------+--------+-----------------+
+|                        | ``<--`` |**inode object**   |  ``<--`` |**dentry object**   | ``<--``| **file object** | 
++                        |         |                   +----------+--------------------+--------+-----------------+ 
+|                        |         |                   |                                                          |
+|                        |         |                   |                                                          |
+|                        |         |                   +----------+--------------------+--------+-----------------+
+|                        |         |                   |  ``<--`` |**dentry object**   | ``<--``| **file object** | 
++------------------------+---------+-------------------+----------+--------------------+--------+-----------------+ 
+
+Each file object, whether it be a regular file, directory, or special file representing a device, is associated with one dentry object, which is in turn associated with one inode object. All of the inode objects in a filesystem are associated with the fileysystem's superblock. The superblock is the root of the filesystem.
+
+Superblock
+==========
+
+A *superblock* is a data structure that contains high-level metadata about the filesystem.
+
+  + Type of filesystem
+  + Status, such as mounted
+  + Maximum file size and filename length
+  + Location of the root inode
+  + Time the filesystem was last mounted or written to
+  + Filesystem UUID (Universally Unique Identifier).
+
+  A superblock is represented by the super_block structure, as defined in linux/include/linux/fs.h. The creation and configuration of the superblock is 
+  determined by the filesystem context, as defined in the fs_context structure. In addition, the set of operations that can be performed on the filesystem context is defined in the fs_context_operations structure. The fs_context and fs_context_operations structures are defined in linux/include/linux/fs_context.h
+
+Inode
+=====
+
+An *inode* (index node) is a data structure that represents a regular file, directory, or other type of object from the point of view of the filesystem. It stores metadata, such as the following, about a regular file, directory, or other type of file system object:
+
+  + Inode number
+  + Type of file and size
+  + Owner and Group ID
+  + Read and write permissions
+  + Modification and access times
+  + Pointer to routines that perform operations for the inode.
+  + Locks
+
+Every file, directory, or other file system object is represented by one inode in the kernel. An inode identifies a file object for the life of the object, even if it is renamed. An inode is defined by the inode structure, and the set of operations that you can perform on an inode are defined in the inode_operations structure. Both structures are defined in linux/include/linux/fs.h
+
+Dentry
+======
+
+A *dentry* (directory entry) is the interface between files and inodes. Each dentry has a pointer to an inode, a file name, and a parent directory, and is used to keep track of the directory structure of the filesystem. Multiple dentries can point to the same inode. The dentry structure is defined in linux/include/linux/dcache.h.
+
+****************************************
+Stepping Through and Running the Example
+****************************************
+
+Overview
+========
+
+This example creates an out-ot-tree module that uses the kernfs API (defined in linux/fs/kernfs) to create the mykfs filesystem. The corresponding functions and structures, in the mykfs.c file, are explained for each of the steps.
+
+The mykfs filesystem that is created by the example, allows you to create, rename, and delete directories. Each time you create a directory, two files are automatically created in the directory:
+
+	``hello``
+		A file containing an initial character string that you can view and edit.
+	``counter``
+		A read-only file that displays *This file has been read n times* where *n* is a counter that is incremented by 1 each time the file is read.
+
+Before you start the example, verify that the following kernfs functions include the line, EXPORT_SYMBOL_GPL(<function_name>) which makes them available to out-of-tree modules. If they are not, then in your local copy of the kernel, add EXPORT_SYMBOL_GPL(<function_name>) to the following functions. Recompile the kernel, and then re-install the modules and kernel again.
+
++--------------------------+-----------------------------------+
+| Filename in /fs/kernfs/  |  Function Name                    |
++==========================+===================================+
+| file.c                   | +__kernfs_create_file             |
++--------------------------+-----------------------------------+
+| dir.c                    | + kernfs_create_root              |
+|                          | + kernfs_destroy_root             |
+|                          | + kernfs_root_to_node             |
+|                          | + kernfs_create_dir_ns            |
+|                          | + kernfs_activate                 |
+|                          | + kernfs_get_parent               |
+|                          | + kernfs_name                     |
+|                          | + kernfs_remove                   |
+|                          | + kernfs_break_active_protection  |
+|                          | + kernfs_unbreak_active_protection|
+|                          | + kernfs_remove_by_name_ns        |
+|                          | + kernfs_rename_ns                |
++--------------------------+-----------------------------------+
+| mount.c                  | + kernfs_kill_sb                  |
+|                          | + kernfs_get_tree                 |
+|                          | + kernfs_free_fs_context          |
++--------------------------+-----------------------------------+
+
+Copy the mykfs.c file to a directory, and then compile the mykfs.c file using the following Makefile:
+
+.. code-block:: C
+
+	obj-m = mykfs.o
+
+	KVERSION = $(shell uname -r)
+	PWD = $(shell pwd)
+
+	all:
+		make -C /lib/modules/$(KVERSION)/build M=$(PWD) modules
+	clean:
+		make -C /lib/modules/$(KVERSION)/build M=$(PWD) clean
+
+Once the compilation is complete, perform the following steps, in order, to run through the example. For each step, the details of the appropriate sections of mykfs.c are described.
+
+#. `Insert mykfs module into the kernel`_
+#. `Mount the mykfs filesystem`_
+#. `View the contents of the hello file`_
+#. `Edit the hello file to add new text`_
+#. `View the contents of the counter file`_
+#. `Create a new directory in the mount directory`_
+#. `Rename the new directory`_
+#. `Remove the renamed directory`_
+#. `Unmount the mykfs filesystem`_
+#. `Remove the mykfs module from the kernel`_
+
+
+
+Insert mykfs module into the kernel
+===================================
+
+In the directory where you compiled the mykfs.c example code, enter the following command to insert the mykfs module into the kernel.
+
+.. code-block:: console
+
+	$sudo insmod mykfs.ko
+
+When the mykfs module is inserted into the kernel, the following init function in mykfs.c is run, which registers the mykfs filesystem with the kernel. The register_filesystem() function is passed the mykfs_fs_type structure.
+
+.. code-block:: C
+    :emphasize-lines: 5
+
+	static int __init myinit (void)
+	{
+		iint ret = 0;
+
+		ret= register_filesystem(&mykfs_fs_type);
+
+		if (ret) 
+			WARN_ON_ONCE(ret);
+
+   		return ret;
+	}
+
+The mykfs_fs_type structure defines the type of filesystem and is of type, file_system_type, which is defined in linux/include/linux/fs.h. 
+
+.. code-block:: C
+
+	static struct file_system_type mykfs_fs_type = {
+		.name = "mykfs",
+		.init_fs_context = init_myfc,
+		.kill_sb = kernfs_kill_sb,
+		.fs_flags = FS_USERNS_MOUNT,
+	};
+
+
+where:
+
+``name`` 
+    Name of the filesystem, which in this example is defined as "mykfs". 
+
+``init_fs_context``
+    Name of the function to be called to initialize the context of the filesystem. This function is called during the mount process.
+
+``kill_sb``
+    The function to be called to kill the superblock. This function is called when the filesystem is unmounted.
+
+``fs_flags``
+    A set of flags that can be assigned to the filesystem. The FS_USERNS_MOUNT flag indicates that the filesystem can be mounted by the user namespace root.
+
+
+
+You can verify that the mykfs filesystem has been registered with the kernel, by looking at the /proc/filesystems file. 
+
+.. code-block:: console
+	:emphasize-lines: 2
+
+	$sudo cat /proc/filesystems
+	nodev	mykfs
+
+Mount the mykfs filesystem
+==========================
+
+Create a directory to be used as the mountpoint for the mykfs filesystem. In this example, the mkfsmount directory is created under the home directory.
+
+.. code-block:: console
+
+	$dir
+	Desktop    Downloads	linux-6.8.7.tar.xz  mykfsmount	Public	Templates
+	Documents  linux-6.8.7	Music		    Pictures	snap	Videos
+
+	
+In the parent directory of your mount directory, mount the mykfs filesystem with the following command:
+
+.. code-block:: console
+
+	$sudo mount -t mykfs none <your_mount_directory>
+
+where:
+
+``-t mykfs`` 
+    Set the type of filesystem to mount. This example mounts the mykfs filesystem. 
+
+``none`` 
+    Indicates that the filesystem is not associated with a device.
+
+``<your_mount_directory>`` 
+    The directory to use as the mountpoint for the filesystem. 
+
+For example:
+
+.. code-block:: console
+    
+    $sudo mount -t mykfs none mykfsmount
+
+When you enter the mount command, the function that is assigned to mykfs_fs_type -> init_fs_context is automatically called.
+
+.. code-block:: C
+	:emphasize-lines: 3
+
+	struct file_system_type mykfs_fs_type = {
+		.name = FSNAME,
+		.init_fs_context = init_myfc,
+		.kill_sb = kernfs_kill_sb,
+		.fs_flags = FS_USERNS_MOUNT,
+	};
+
+The init_myfc() function performs the following:
+	1.  Allocates memory for the kernfs_filesystem_context (kfc) instance.
+
+		.. code-block:: C
+			:emphasize-lines: 6
+
+			static int init_myfc(struct fs_context *fc)
+			{
+				struct kernfs_node *myrootkn;	
+				int ret = 0;
+
+				kfc = kmalloc(sizeof(struct kernfs_fs_context), GFP_KERNEL);
+				if (!kfc) 
+					return -ENOMEM;
+	
+
+	2. Sets elements of the filesystem_context structure instance (fc).
+
+		.. code-block:: C 
+
+			fc->fs_type = &mykfs_fs_type;
+			fc->ops = &fs_ops;
+			fc->fs_private = kfc;
+	
+		where:
+
+			``fs_type`` 
+				The type of filesystem is set to the mykfs_fs_type struture which has been previously defined.
+
+   			``ops``
+				The set of operations on the filesystem context which are invoked by the various stages of the mount operation. This example points to the fs_ops structure, which defines the get_tree operation.
+
+	   	 			.. code-block:: C
+
+		  	  			static const struct fs_context_operations fs_ops = {
+        		   			 .get_tree = my_get_tree,
+		  	 			 };
+
+   			``fs_private``
+				Private information for this filesystem. In this example, we set this to an instance of the kernfs_fs_context structure, defined in linux/kernfs.h, which the various kernfs functions will set or read.
+
+
+	3.  Creates the root of the mykfs filesystem. If there is an error, the root is destroyed. If the root is successfully created, then kernfs_root_to_node(), defined in linux/fs/kernfs/dir.c, is called to get the node associated with the root so it can be used as the parent node for the hello and counter files.
+	
+		.. code-block:: C
+			:emphasize-lines: 1, 12
+
+			mykfs_root = kernfs_create_root(&mykfs_sops, KERNFS_ROOT_CREATE_DEACTIVATED, NULL);	
+
+			if (IS_ERR(mykfs_root) ) {
+				ret = PTR_ERR(mykfs_root);
+				goto free_root_kfc;
+			}
+	
+			/* Get the node associated with the root so it can be used as the parent
+			*  node for creating the hello and counter files
+			*/
+				
+			myrootkn = kernfs_root_to_node(mykfs_root);
+
+			if (IS_ERR(myrootkn)) {
+				ret = PTR_ERR(myrootkn);
+				goto free_root_kfc;
+			}
+		
+		The  kernfs_create_root() function, defined in /fs/kernfs/dir.c, creates the root of the filesystem and is passed three variables:
+
+   			``mykfs_sops``
+				An instance of the kernfs_syscall_ops structure, defined in /linux/kernfs.h, that defines which functions are automatically called when you create, rename, or remove a directory in the filesystem.
+ 
+       				.. code-block:: c
+
+          				static struct kernfs_syscall_ops mykfs_sops = {
+							.mkdir = mykfs_mkdir,
+							.rmdir = mykfs_rmdir,
+							.rename = mykfs_dir_rename,
+						};
+		
+			``KERNFS_ROOT_CREATE_DEACTIVATED``
+				A flag that says to create the root node deactivated. There are other kernfs_root_flag values available, as defined in linux/kernfs.h. The root is created deactivated so that we can create the hello and counter files as children of the root.
+
+			``NULL``
+				Opaque data for the root. In this example, there is none.
+			
+	4.  Creates the hello and counter files as children of the root node.
+
+		.. code-block:: C
+			:emphasize-lines: 1
+
+			ret = populate_directory(myrootkn);
+
+			if (ret)
+				goto free_root_kfc;
+
+		The populate_directory() function takes a pointer to the parent node and creates the hello and counter files as children.
+
+		It creates a pointer(mfd) to the myfiledata struct. 
+		The mfd pointer is added to mykfs_files and the pointer to the parent kernfs_node is added to mykfs_directories.
+		THese two arrays maintain the pointers for the diretories that are created, along with their associated mfd pointers assigned to their hello and counter files. MAXTPRS sets the maximum number of directories that can be created.
+		
+		.. code-block:: c
+
+			#define MAXPTRS 10
+		
+			/* myfiledata pointers of hello/counter nodes for each directory*/
+
+			static struct myfiledata *mykfs_files[MAXPTRS];
+
+			/* kernfs_node pointers for each directory that is created */
+
+			static struct kernfs_node *mykfs_directories[MAXPTRS];
+
+
+		The  mfd->buffer is initialzed to a text string for the hello file and mfd->buffer_size is set to the length of the string assigned to mfd->buffer. In addition, mfd->read_count
+		is set to 0 for the counter file. The pointer to mfd is then passed as private date for the hello and counter nodes.
+		
+		.. 	code-block:: C
+			:emphasize-lines: 6, 7, 22, 23, 24, 25, 26, 27, 28, 29, 30, 41, 43, 48, 57, 58, 59, 73, 74, 75
+
+			static int populate_directory(struct kernfs_node *parent)
+			{
+				struct kernfs_node *hello_node, *counter_node;	
+
+				int ret = 0;
+				struct myfiledata *mfd;
+				const char *hello_text = "This is the initial text in hello file\n";
+				int i;
+
+				mfd = kmalloc(sizeof(struct myfiledata), GFP_KERNEL);
+		
+				if (!mfd)
+					return -ENOMEM;
+		
+				unsigned int selected_element;
+				bool added_node;
+				added_node = false;
+				selected_element = 0;
+	
+				/* find next pointer in array to populate */
+	
+				for (i = 0; i < MAXPTRS; i++) {		
+ 					if (!mykfs_files[i]) {
+						mykfs_files[i] = mfd;
+						mykfs_directories[i] = parent;
+						added_node = true;
+						selected_element = i;
+						break;
+					}
+  				} 
+  	
+  				if (!added_node) {
+  					kfree(mfd);
+  					return -ENOMEM;
+  				}
+  		
+
+				/* Initialize the buffer element with the hello_text so that the
+				*  hello file will contain text when first opened. */
+	
+				strcpy(mfd->buffer, hello_text);
+	
+				mfd->buffer_size = strlen(hello_text);
+	
+				/* Initialize the read_count element to 0 so that the counter file
+				*  starts at 0 reads.*/
+	
+				mfd->read_count = 0;
+	
+				/* Create the read-write hello file that contains a text string. 
+				* You are able to read from and write to this file.
+				*  Pass mfd (a pointer to the myfiledata structure) that holds the
+				* character string for the file as the priv input parameter. 
+				* The __kernfs_create_file() function then sets the priv element
+				* of the new node to mfd. */
+		
+				hello_node = __kernfs_create_file(parent, "hello", 0666, current_fsuid(), 
+					current_fsgid(), 0, &mykfs_hello_kernfs_ops,
+					 mfd, NULL, NULL);	
+																	
+				if (IS_ERR(hello_node))	{	
+					ret = PTR_ERR(hello_node);
+					goto free_mfd;
+				}
+	
+				/* Create the read-only file that increments a counter every time you
+				* read it. 
+				* Pass mfd (a pointer to the myfiledata structure) that holds the
+				* counter integer for the file as the priv input parameter. 
+				* The __kernfs_create_file() function then sets the priv element
+				* of the new node to mfd. */
+			
+				counter_node = __kernfs_create_file(parent, "counter", 0444, current_fsuid(),
+					current_fsgid(), 0, &mykfs_counter_kernfs_ops, 
+					mfd, NULL, NULL);			
+		
+				if (IS_ERR(counter_node)) {
+					ret = PTR_ERR(counter_node);
+					goto remove_hello_node;
+				}		
+		
+
+				return ret;
+	
+				remove_hello_node:
+					kernfs_remove(hello_node);
+	
+				free_mfd:
+					mykfs_files[selected_element] = 0;
+					mykfs_directories[selected_element] = 0;
+					kfree(mfd);
+					return ret;
+			}
+
+		The __kernfs_create_file() function used to create the hello and counter nodes is defined in linux/fs/kernfs/file.c and has the following inputs:
+
+			``struct kernfs_node *parent``
+				The parent node. 
+			
+			``const char *name``
+				The name of the file.
+
+			``umode_t mode``
+				The file permissions mode. In this example, we are passing 0666 because the file is readable and writeable by everyone.
+
+			``kuid_t uid``
+				uid of the file.
+
+			``kgid_t gid``
+				gid of the file.
+
+			``loff_t size``
+				Size of the file
+
+			``const struct kernfs_ops *ops``
+				The kernfs operations for the file are defined by an instance of the structure 
+				kernfs_ops (defined in linux/include/linux/kernfs.h). For the hello file,
+				mykfs_hello_kernfs_ops is being passed which defines what functions to call to read and write the hello file.
+
+				.. code-block:: C
+
+					/**
+					* struct mykfs_hello_kernfs_ops- Structure that defines which functions to call for reading
+					* and writing to a file. In this example, this structure is used for the hello files.
+					* @write- the function to call when the user writes to and saves the file.
+					* @read - the function to call when the user asks to read the contents of a file.
+					* @prealloc - this is boolean and it must be set to true for read/write functions. 
+					*             
+					*/
+					static struct kernfs_ops mykfs_hello_kernfs_ops = {
+						.write	= mykfs_file_write,
+						.read = mykfs_hello_file_read,
+						.prealloc = true,
+					};
+
+				In this example, the counter file illustrates the use of the sequsence file path when viewing the contents of a file. 
+				The seq_show element defines the function to be called to view the counter file. There is no write element included, 
+				as the counter file is created as read-only.
+
+			 .. code-block:: C 
+
+					struct kernfs_ops mykfs_counter_kernfs_ops = {
+						.seq_show = mykfs_counter_seqfile_show,
+					};		
+
+			``void *priv``
+				Private data for the file. This is passed a pointer to the myfiledata structure that contains the contents of the file.
+
+			``const void *ns``
+				Optional namespace tag for the file.
+
+			``struct lock_class_key *key``
+				Lockdep key for the file's active_ref, NULL to disable lockdep.
+
+	6. Activate the root node and set the root element of the kernfs_fs_context structure to mykfs_root. The kernfs_activate() function is defined in linux/fs/kernfs/dir.c. It takes one input, a kernfs_node.
+
+		.. code-block:: C
+			:emphasize-lines: 1, 2
+
+			kernfs_activate(myrootkn);			
+			kfc->root = mykfs_root;
+
+			return ret;
+	
+			free_root_kfc:
+				kernfs_destroy_root(mykfs_root);
+				mykfs_root = NULL;
+				kfree(kfc);
+				return ret;
+		
+
+
+Once init_myfc() is completed, the mount process calls the function assigned to fs_ops->get_tree, which in this example is my_get_tree().
+
+.. code-block:: C
+	:emphasize-lines: 2
+
+	static const struct fs_context_operations fs_ops = {
+		.get_tree = my_get_tree,
+	};
+
+
+The my_get_tree() function calls kernfs_get_tree(), defined in /fs/kernfs/mount.c, which creates the mountable root and superblock for the filesystem, using the infomation stored in the filesystem context. If the superblock is successfully created, then kernfs_get_tree() sets kfc->new_sb_created to true.
+
+.. code-block:: C
+    :emphasize-lines: 7, 12
+
+    static int my_get_tree(struct fs_context *fc)
+	{
+		int ret = 0;
+			
+		kfc = fc->fs_private;
+		
+		ret = kernfs_get_tree(fc);
+	
+		if (ret)
+			return ret;
+
+		if (kfc->new_sb_created) {
+			fc->root->d_sb->s_iflags |= SB_I_USERNS_VISIBLE;
+		
+		}
+		return ret;
+	}
+
+View the contents of the hello file
+===================================
+
+The hello file was created during the mount process. You can view the contents of the file using the cat command:
+
+.. code-block:: console
+
+	$ cat hello
+	This is the initial text in hello file
+
+When you ask to read the contents of the hello file, the function assigned to mykfs_hello_kernfs_ops.read is automatically called.
+
+.. code-block:: C
+	:emphasize-lines: 3
+
+	static struct kernfs_ops mykfs_hello_kernfs_ops = {
+		.write	= mykfs_file_write,
+		.read = mykfs_hello_file_read,
+		.prealloc = true,
+	};
+
+The mykfs_hello_file)read() function receives the following input:
+	
+	``struct kernfs_open_file *of``
+				A pointer to the open file. 
+
+	``char *buf``
+		The character buffer to which the function will copy the file contents for display in userspace.
+
+	``size_t nbytes``
+		The numbuer of bytes being asked for by the read function.
+
+	``loff_t off``
+		The offset into the file contents buffer from which to start copying nbytes into buf.
+
+The mykfs_hello_file)read() function reads the file buffer element of the myfiledata structure assigned to kn->priv.
+
+	.. code-block:: C 
+
+		static ssize_t mykfs_hello_file_read(struct kernfs_open_file *of, char *buf, size_t nbytes, loff_t off)
+		{
+			struct myfiledata *mfd;
+
+			size_t bytestocopy;
+			mfd = of->kn->priv;
+			bytestocopy = nbytes;
+
+
+A check is made to ensure that the maximum size of the myfiledata->buffer does not exceed PAGE_SIZE. If the number of bytes requested is larger than PAGE_SIZE, the function will provide a warning
+and cap the maximum number of bytes to read to PAGE_SIZE. However, the write function already caps what is written into the file at (PAGE_SIZE -1) so this case should not occur.
+
+	.. code-block:: c
+
+		if (bytestocopy > PAGE_SIZE)
+		{
+			bytestocopy = PAGE_SIZE;
+			WARN_ON_ONCE(bytestocopy > PAGE_SIZE);
+		}
+
+		if ((bytestocopy + off) > mfd->buffer_size) {
+			bytestocopy = mfd->buffer_size - off;
+
+		} else if (bytestocopy > mfd->buffer_size) {
+
+			bytestocopy = mfd->buffer_size;
+		}
+
+		memcpy(buf, mfd->buffer + off, bytestocopy);
+
+		return bytestocopy;
+
+	}
+
+The first time through the function, the contents of myfiledata->buffer retrieved from of->kn->priv  is copied into buf, up to either the number of bytes in the myfiledata->buffer (bytestocopy) or nybytes, whichever is smaller. The function 
+returns bytestocopy.
+
+This function is automatically called until all bytes that have been requested from the hello file buffer have been copied into buf. Each time the function is called, the kernfs API automatically increases the offset by the number of bytes copied into buf.	
+
+Edit the hello file to add new text
+===================================
+
+You can also edit the hello file to add your own text. In this example, the text, "this is my new test I added into the hello file!!" is being added.
+
+.. code-block:: C
+	
+	$ vi hello
+
+When you call to edit the file, first, the file you have defined to read the contents of the hello file is called. Once you save the updated file contents, the function assigned to mykfs_kernfs_ops.write is automatically called.
+
+.. code-block:: C
+	:emphasize-lines: 2, 3
+
+	static struct kernfs_ops mykfs_hello_kernfs_ops = {
+		.write = mykfs_file_write,
+		.read = mykfs_hello_file_read,
+		.prealloc = true,
+	};
+
+The mykfs_file_write() is passed a pointer to a kernfs_open_file structure, defined in /fs/kernfs/file.c. The kernfs API takes the updated text in the hello file shown in the console (userspace) and copies it into a buffer (buf) in kernel space. Then memcpy() is used to copy the contents from buf to the myfildedata structure (mfd) of the hello file.
+
+.. code-block:: C
+	:emphasize-lines: 5
+
+	static ssize_t mykfs_file_write(struct kernfs_open_file *of, char *buf, size_t nbytes, loff_t off)
+	{
+	
+		/* The kernfs_open_file structure includes the kernfs_node and the kernfs_node element includes
+		*  the priv element which is assigned to a myfiledata structure.
+		*/
+	
+		struct myfiledata *mfd;
+
+		mfd = of->kn->priv;
+
+		if ((nbytes + off) > PAGE_SIZE) {
+			WARN_ON_ONCE((nbytes + off) > PAGE_SIZE);
+			return nbytes;
+		}
+		memcpy(mfd->buffer + off, buf, nbytes);
+
+		mfd->buffer_size = nbytes + off;
+
+		return nbytes;
+	}
+
+
+
+You can verify that your text was saved in the file by viewing the contents of the file again. In this examaple, "this is my new text I added into the hello file!!" was added.
+
+.. code-block:: console
+
+	$cat hello
+	This is the initial text in hello file
+
+	this is my new text I added into the hello file!!
+
+View the contents of the counter file
+=====================================
+
+When you call to view the contents of the counter file, the function you have defined in the mykfs_counter_kernfs_ops structure to read the contents of the counter file is called. In this example the mykfs_counter_seqfile_show() function is called.
+
+.. code-block:: C
+	:emphasize-lines: 2
+
+	static struct kernfs_ops mykfs_counter_kernfs_ops = {
+		.seq_show = mykfs_counter_seqfile_show,
+	};
+
+
+The mykfs_counter_seqfile_show() function first gets the pointer to the myfiledata structure associated with the counter file node. The priv element of the counter file node was set to the myfiledata structure
+when the counter file was created. The myfiledata->read_count element contains the integer counter. The counter is incremented by one and then the text is displayed to the console using seq_printf(). The seq_printf() function is defined in linux/seq_file.h.
+
+.. code-block:: C
+	
+	static int mykfs_counter_seqfile_show(struct seq_file *m, void *arg)
+	{
+		struct kernfs_open_file *of;
+
+		of = m->private;
+
+		struct myfiledata *mfd;
+
+		mfd = of->kn->priv;
+
+		mfd->read_count++;
+
+		seq_printf(m,"This file has been read %d times\n", mfd->read_count);
+
+		return 0;
+	}
+
+Create a new directory in the mount directory
+=============================================
+
+To create a new directory, go to your mount directory and enter the following to create the "test" subdirectory:
+
+.. code-block:: console
+
+	$sudo mkdir test
+
+The function that is assigned to the mykfs_sops.mkdir structure element is automatically called.
+
+.. code-block:: C
+	:emphasize-lines: 2
+
+	static struct kernfs_syscall_ops mykfs_sops = {
+		.mkdir = mykfs_mkdir,
+		.rmdir = mykfs_rmdir,
+		.rename = mykfs_dir_rename,
+	};
+
+The mykfs_mkdir() function is passed the parent node, the name of the new directory, and the mode. The kernfs_create_dir_ns() function, defined in /fs/kernfs/dir.c, is called to create the new node for the directory. After the new directory kernfs_node is created,  the populate_directory() function, defined previously, is called to create two files. The "hello" file has permissions for reading and writing, but the "counter" file is read-only. The new directory node is activated using kernfs_activate(), which is also defined in /fs/kernfs/dir.c.
+
+.. code-block:: C
+	:emphasize-lines: 9, 14, 22
+
+	static int mykfs_mkdir (struct kernfs_node *parent_kn, const char *name, umode_t mode)
+	{
+		struct kernfs_node *kn;
+
+		int ret = 0;
+
+		/* create the new directory */
+
+		kn = kernfs_create_dir_ns(parent_kn, name, mode, current_fsuid(), current_fsgid(), NULL, NULL);
+
+		if (IS_ERR(kn))
+			return PTR_ERR(kn);
+
+		ret = populate_directory(kn);
+
+		if (ret) {
+			kernfs_remove(kn);
+			return ret;
+		}
+
+		/*activate the new directory */
+		kernfs_activate(kn);
+
+		return ret;
+	}
+
+
+Rename the new directory
+========================
+
+To rename the new directory, go to your mount directory and enter the following to rename test to test2:
+
+.. code-block:: console
+
+	$sudo mv test test2
+
+When you enter the mv command, the function that is assigned to the mykfs_sops.rename structure element is automatically called.
+
+.. code-block:: C
+	:emphasize-lines: 4
+
+	static struct kernfs_syscall_ops mykfs_sops = {
+		.mkdir = mykfs_mkdir,
+		.rmdir = mykfs_rmdir,
+		.rename = mykfs_dir_rename,
+	};
+
+The mykfs_dir_rename() function is passed the directory node, the node of the new parent, which mykfs_dir_rename() requires to be equal to the current parent, and the new name of the directory. The kernfs_break_active_protection() function releases the active reference of the node the caller is
+holding. Then the kernfs_rename_ns() function is called to rename the directory. Finally, the kernfs_unbreak_active_protection() function is called to restore the active reference. All three kernfs functions are defined in /fs/kernfs/dir.c.
+
+.. code-block:: C
+
+	static int mykfs_dir_rename(struct kernfs_node *kn, struct kernfs_node *new_parent, const char *new_name_str)
+	{
+		int ret = 0;
+
+		if (kn->parent != new_parent)
+			return -EINVAL;
+
+		/* release protection of node being renamed and its parent */
+
+		kernfs_break_active_protection(new_parent);
+		kernfs_break_active_protection(kn);
+
+		ret = kernfs_rename_ns(kn, new_parent, new_name_str, NULL);
+
+		/* restore protection of the renamed node and its parent */
+		kernfs_unbreak_active_protection(kn);
+		kernfs_unbreak_active_protection(new_parent);
+
+		return ret;
+	}
+
+
+Remove the renamed directory
+============================
+
+To remove the renamed directory, test2, go to your mount directory and enter:
+
+.. code-block:: console
+
+	$sudo rmdir test2
+
+When you enter the rmdir command, the function that is assigned to mykfs_sops.rmdir is automatically called.
+
+.. code-block:: C
+	:emphasize-lines: 3
+
+	static struct kernfs_syscall_ops mykfs_sops = {
+		.mkdir = mykfs_mkdir,
+		.rmdir = mykfs_rmdir,
+		.rename = mykfs_dir_rename,
+	};
+
+The mykfs_rmdir() function is passed the node for the test2 directory. First the kernfs_break_active_protection() function releases the active reference of the node that the caller is holding. The function then trys to find the pointer for the directory and the corresponding mfd pointer associated with the hello and counter files. If found, the array element is set to 0 to allow creation of another directory, and the memory for mfd is freed. Then the kernfs_remove() function is called to recursively remove the node and all of its subdirectories and files. Finally, the kernfs_unbreak_active_protection() function is called to restore the active reference. All three kernfs functions are defined in linux/fs/kernfs/dir.c.
+
+.. code-block:: C
+
+	static int mykfs_rmdir(struct kernfs_node *kn)
+	{
+
+		int i;
+		bool found_ptr;
+
+		found_ptr = false;
+
+		kernfs_break_active_protection(kn);
+
+		for (i = 0; i < MAXPTRS; i++) {
+			if (mykfs_directories[i] == kn) {
+				kfree(mykfs_files[i]);
+				mykfs_files[i] = 0;
+				mykfs_directories[i] = 0;
+				found_ptr = true;
+				break;
+			}
+		}
+		WARN_ON_ONCE(!found_ptr);
+
+		kernfs_remove(kn);
+		kernfs_unbreak_active_protection(kn);
+
+		return 0;
+	}
+
+
+Unmount the mykfs filesystem
+=============================
+
+You can now unmount the mykfs filesystem, for example:
+
+.. code-block:: console
+
+	$sudo umount mykfsmount
+
+Unmounting the filesystem automatically calls the function assigned to mykfs_fs_type.kill_sb. This example calls kernfs_kill_sb() directly. The kernfs_kill_sb() function is defined in fs/kernfs/mount.c and is used to remove the superblock. You can also make your own function that calls kernfs_kill_sb(), if you have other clean-up to occur during the dismount.
+
+.. code-block:: C
+	:emphasize-lines: 4
+
+		static struct file_system_type mykfs_fs_type = {
+			.name = "mykfs",
+			.init_fs_context = init_myfc,
+			.kill_sb = kernfs_kill_sb,
+			.fs_flags = FS_USERNS_MOUNT,
+		};
+
+
+
+Remove the mykfs module from the kernel
+=======================================
+
+To remove the mykfs module from the kernel, enter the following command:
+
+.. code-block:: console
+
+	$sudo rmmod mykfs
+
+
+When you remove the module, the exit function, say_goodbye, is automatically called. This function frees the memory used by the mfd pointers, as well as the array of directory pointers. It destroys the root, frees the kernfs filesystem context, and unregisters the mykfs filesystem.
+
+.. code-block:: c
+
+	static void __exit say_goodbye(void)
+	{
+   		free_mfd();
+		kernfs_destroy_root(mykfs_root);
+		kfree(kfc);
+		unregister_filesystem(&mykfs_fs_type);
+	}
+
+The free_mfd() function goes throu the mykfs_files and mykfs_directories and sets frees all of the memory and resets array elements to 0.
+
+.. code-block:: c
+
+	static void free_mfd(void) {
+		int i = 0;
+		while(i < MAXPTRS) {
+			if (mykfs_files[i]) {
+				kfree(mykfs_files[i]);
+				mykfs_files[i] = 0;
+				mykfs_directories[i] = 0;
+			}
+			i++;
+		}
+	}
+

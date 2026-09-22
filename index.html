@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="./">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Creating a Simple Filesystem Using Kernfs &#8212; How to Easily Create a Simple Filesystem Using the Kernfs API 0.1 documentation</title>
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=fa44fd50" />
+    <link rel="stylesheet" type="text/css" href="_static/alabaster.css?v=12dfc556" />
+    <script src="_static/documentation_options.js?v=2709fde1"></script>
+    <script src="_static/doctools.js?v=888ff710"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="How to Easily Create a Simple Filesystem Using the Kernfs API" href="run_mykfs_example.html" />
+   
+  <link rel="stylesheet" href="_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="creating-a-simple-filesystem-using-kernfs">
+<h1>Creating a Simple Filesystem Using Kernfs<a class="headerlink" href="#creating-a-simple-filesystem-using-kernfs" title="Link to this heading">¶</a></h1>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="run_mykfs_example.html">How to Easily Create a Simple Filesystem Using the Kernfs API</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="run_mykfs_example.html#kernfs-api-overview">kernfs API Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="run_mykfs_example.html#filesystem-metadata-overview">Filesystem Metadata Overview</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#superblock">Superblock</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#inode">Inode</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#dentry">Dentry</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="run_mykfs_example.html#stepping-through-and-running-the-example">Stepping Through and Running the Example</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#overview">Overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#insert-mykfs-module-into-the-kernel">Insert mykfs module into the kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#mount-the-mykfs-filesystem">Mount the mykfs filesystem</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#view-the-contents-of-the-hello-file">View the contents of the hello file</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#edit-the-hello-file-to-add-new-text">Edit the hello file to add new text</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#view-the-contents-of-the-counter-file">View the contents of the counter file</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#create-a-new-directory-in-the-mount-directory">Create a new directory in the mount directory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#rename-the-new-directory">Rename the new directory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#remove-the-renamed-directory">Remove the renamed directory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#unmount-the-mykfs-filesystem">Unmount the mykfs filesystem</a></li>
+<li class="toctree-l3"><a class="reference internal" href="run_mykfs_example.html#remove-the-mykfs-module-from-the-kernel">Remove the mykfs module from the kernel</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="#">How to Easily Create a Simple Filesystem Using the Kernfs API</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="run_mykfs_example.html">How to Easily Create a Simple Filesystem Using the Kernfs API</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="#">Documentation overview</a><ul>
+      <li>Next: <a href="run_mykfs_example.html" title="next chapter">How to Easily Create a Simple Filesystem Using the Kernfs API</a></li>
+  </ul></li>
+</ul>
+</div>
+<div id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</div>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2024, Millie.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.2.6</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="_sources/index.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

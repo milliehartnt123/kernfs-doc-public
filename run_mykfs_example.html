@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="./">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>How to Easily Create a Simple Filesystem Using the Kernfs API &#8212; How to Easily Create a Simple Filesystem Using the Kernfs API 0.1 documentation</title>
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=fa44fd50" />
+    <link rel="stylesheet" type="text/css" href="_static/alabaster.css?v=12dfc556" />
+    <script src="_static/documentation_options.js?v=2709fde1"></script>
+    <script src="_static/doctools.js?v=888ff710"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+   
+  <link rel="stylesheet" href="_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="how-to-easily-create-a-simple-filesystem-using-the-kernfs-api">
+<h1>How to Easily Create a Simple Filesystem Using the Kernfs API<a class="headerlink" href="#how-to-easily-create-a-simple-filesystem-using-the-kernfs-api" title="Link to this heading">¶</a></h1>
+<section id="kernfs-api-overview">
+<h2>kernfs API Overview<a class="headerlink" href="#kernfs-api-overview" title="Link to this heading">¶</a></h2>
+<p>The kernfs API provides a set of functions that can be used internally by various kernel subsystems or by an out-of-tree module to implement a simple filesystem that bridges userspace with kernel space without having to be familiar with the Linux Virtual File System (VFS). The kernfs functions handle all of the low-level programming for you.</p>
+<p>One of the uses for the kernfs API is to automatically populate a directory with one or more files when the directory is created.</p>
+<p>The source code is in the linux/fs/kernfs directory and includes the following files.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 33.3%" />
+<col style="width: 66.7%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>File</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Kconfig</p></td>
+<td><p>Used to generate the configuration file for kernfs</p></td>
+</tr>
+<tr class="row-odd"><td><p>Makefile</p></td>
+<td><p>The makefile for compiling and building the kernfs code.</p></td>
+</tr>
+<tr class="row-even"><td><p>dir.c</p></td>
+<td><p>Functions to create and manipulate directories and subdirectories. Defines operations on directories and on directory inodes.</p></td>
+</tr>
+<tr class="row-odd"><td><p>file.c</p></td>
+<td><p>Functions to create and manipulate files. Defines available file operations.</p></td>
+</tr>
+<tr class="row-even"><td><p>inode.c</p></td>
+<td><p>Functions to create or get an inode, define operations on inodes, and set attributes. Each file has a unique inode.</p></td>
+</tr>
+<tr class="row-odd"><td><p>kernfs-internal.h</p></td>
+<td><p>Header file defining kernfs-specific structures and variables.</p></td>
+</tr>
+<tr class="row-even"><td><p>mount.c</p></td>
+<td><p>Functions to create the filesystem.</p></td>
+</tr>
+<tr class="row-odd"><td><p>symlink.c</p></td>
+<td><p>Functions to create a parent directory for the symlink and point the symlink to a target node.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="filesystem-metadata-overview">
+<h2>Filesystem Metadata Overview<a class="headerlink" href="#filesystem-metadata-overview" title="Link to this heading">¶</a></h2>
+<p>Most filesystems interface with applications in the userspace through the Virtual File System (VFS), and through devices using the device drivers. The VFS, filesystems, and device drivers all live in the kernel space.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head" colspan="2"><p>User space</p></th>
+<th class="head" colspan="5"><p>Kernel space</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>User Applications</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;--&gt;</span></code></p></td>
+<td><p>VFS</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;--&gt;</span></code></p></td>
+<td><p>Filesystem</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;--&gt;</span></code></p></td>
+<td><p>Device Drivers</p></td>
+</tr>
+</tbody>
+</table>
+<p>While the kernfs API provides functions that manipulate the filesystem metadata for you, it is important to be aware of the different structures that are being passed or returned by those functions.</p>
+<p>Linux filesystems, including those created based on kernfs, are composed of the following abstract parts, as shown:</p>
+<table class="docutils align-default">
+<tbody>
+<tr class="row-odd"><td rowspan="5"><p><strong>superblock object</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;--</span></code></p></td>
+<td><p><strong>inode object</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;--</span></code></p></td>
+<td><p><strong>dentry object</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;--</span></code></p></td>
+<td><p><strong>file object</strong></p></td>
+</tr>
+<tr class="row-even"><td colspan="6"></td>
+</tr>
+<tr class="row-odd"><td rowspan="3"><p><code class="docutils literal notranslate"><span class="pre">&lt;--</span></code></p></td>
+<td rowspan="3"><p><strong>inode object</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;--</span></code></p></td>
+<td><p><strong>dentry object</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;--</span></code></p></td>
+<td><p><strong>file object</strong></p></td>
+</tr>
+<tr class="row-even"><td colspan="4"></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">&lt;--</span></code></p></td>
+<td><p><strong>dentry object</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;--</span></code></p></td>
+<td><p><strong>file object</strong></p></td>
+</tr>
+</tbody>
+</table>
+<p>Each file object, whether it be a regular file, directory, or special file representing a device, is associated with one dentry object, which is in turn associated with one inode object. All of the inode objects in a filesystem are associated with the fileysystem’s superblock. The superblock is the root of the filesystem.</p>
+<section id="superblock">
+<h3>Superblock<a class="headerlink" href="#superblock" title="Link to this heading">¶</a></h3>
+<p>A <em>superblock</em> is a data structure that contains high-level metadata about the filesystem.</p>
+<blockquote>
+<div><ul class="simple">
+<li><p>Type of filesystem</p></li>
+<li><p>Status, such as mounted</p></li>
+<li><p>Maximum file size and filename length</p></li>
+<li><p>Location of the root inode</p></li>
+<li><p>Time the filesystem was last mounted or written to</p></li>
+<li><p>Filesystem UUID (Universally Unique Identifier).</p></li>
+</ul>
+<p>A superblock is represented by the super_block structure, as defined in linux/include/linux/fs.h. The creation and configuration of the superblock is
+determined by the filesystem context, as defined in the fs_context structure. In addition, the set of operations that can be performed on the filesystem context is defined in the fs_context_operations structure. The fs_context and fs_context_operations structures are defined in linux/include/linux/fs_context.h</p>
+</div></blockquote>
+</section>
+<section id="inode">
+<h3>Inode<a class="headerlink" href="#inode" title="Link to this heading">¶</a></h3>
+<p>An <em>inode</em> (index node) is a data structure that represents a regular file, directory, or other type of object from the point of view of the filesystem. It stores metadata, such as the following, about a regular file, directory, or other type of file system object:</p>
+<blockquote>
+<div><ul class="simple">
+<li><p>Inode number</p></li>
+<li><p>Type of file and size</p></li>
+<li><p>Owner and Group ID</p></li>
+<li><p>Read and write permissions</p></li>
+<li><p>Modification and access times</p></li>
+<li><p>Pointer to routines that perform operations for the inode.</p></li>
+<li><p>Locks</p></li>
+</ul>
+</div></blockquote>
+<p>Every file, directory, or other file system object is represented by one inode in the kernel. An inode identifies a file object for the life of the object, even if it is renamed. An inode is defined by the inode structure, and the set of operations that you can perform on an inode are defined in the inode_operations structure. Both structures are defined in linux/include/linux/fs.h</p>
+</section>
+<section id="dentry">
+<h3>Dentry<a class="headerlink" href="#dentry" title="Link to this heading">¶</a></h3>
+<p>A <em>dentry</em> (directory entry) is the interface between files and inodes. Each dentry has a pointer to an inode, a file name, and a parent directory, and is used to keep track of the directory structure of the filesystem. Multiple dentries can point to the same inode. The dentry structure is defined in linux/include/linux/dcache.h.</p>
+</section>
+</section>
+<section id="stepping-through-and-running-the-example">
+<h2>Stepping Through and Running the Example<a class="headerlink" href="#stepping-through-and-running-the-example" title="Link to this heading">¶</a></h2>
+<section id="overview">
+<h3>Overview<a class="headerlink" href="#overview" title="Link to this heading">¶</a></h3>
+<p>This example creates an out-ot-tree module that uses the kernfs API (defined in linux/fs/kernfs) to create the mykfs filesystem. The corresponding functions and structures, in the mykfs.c file, are explained for each of the steps.</p>
+<p>The mykfs filesystem that is created by the example, allows you to create, rename, and delete directories. Each time you create a directory, two files are automatically created in the directory:</p>
+<blockquote>
+<div><dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">hello</span></code></dt><dd><p>A file containing an initial character string that you can view and edit.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">counter</span></code></dt><dd><p>A read-only file that displays <em>This file has been read n times</em> where <em>n</em> is a counter that is incremented by 1 each time the file is read.</p>
+</dd>
+</dl>
+</div></blockquote>
+<p>Before you start the example, verify that the following kernfs functions include the line, EXPORT_SYMBOL_GPL(&lt;function_name&gt;) which makes them available to out-of-tree modules. If they are not, then in your local copy of the kernel, add EXPORT_SYMBOL_GPL(&lt;function_name&gt;) to the following functions. Recompile the kernel, and then re-install the modules and kernel again.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Filename in /fs/kernfs/</p></th>
+<th class="head"><p>Function Name</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>file.c</p></td>
+<td><p>+__kernfs_create_file</p></td>
+</tr>
+<tr class="row-odd"><td><p>dir.c</p></td>
+<td><ul class="simple">
+<li><p>kernfs_create_root</p></li>
+<li><p>kernfs_destroy_root</p></li>
+<li><p>kernfs_root_to_node</p></li>
+<li><p>kernfs_create_dir_ns</p></li>
+<li><p>kernfs_activate</p></li>
+<li><p>kernfs_get_parent</p></li>
+<li><p>kernfs_name</p></li>
+<li><p>kernfs_remove</p></li>
+<li><p>kernfs_break_active_protection</p></li>
+<li><p>kernfs_unbreak_active_protection</p></li>
+<li><p>kernfs_remove_by_name_ns</p></li>
+<li><p>kernfs_rename_ns</p></li>
+</ul>
+</td>
+</tr>
+<tr class="row-even"><td><p>mount.c</p></td>
+<td><ul class="simple">
+<li><p>kernfs_kill_sb</p></li>
+<li><p>kernfs_get_tree</p></li>
+<li><p>kernfs_free_fs_context</p></li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Copy the mykfs.c file to a directory, and then compile the mykfs.c file using the following Makefile:</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="n">obj</span><span class="o">-</span><span class="n">m</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs</span><span class="p">.</span><span class="n">o</span>
+
+<span class="n">KVERSION</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">$</span><span class="p">(</span><span class="n">shell</span><span class="w"> </span><span class="n">uname</span><span class="w"> </span><span class="o">-</span><span class="n">r</span><span class="p">)</span>
+<span class="n">PWD</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">$</span><span class="p">(</span><span class="n">shell</span><span class="w"> </span><span class="n">pwd</span><span class="p">)</span>
+
+<span class="nl">all</span><span class="p">:</span>
+<span class="w">        </span><span class="n">make</span><span class="w"> </span><span class="o">-</span><span class="n">C</span><span class="w"> </span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">modules</span><span class="o">/</span><span class="n">$</span><span class="p">(</span><span class="n">KVERSION</span><span class="p">)</span><span class="o">/</span><span class="n">build</span><span class="w"> </span><span class="n">M</span><span class="o">=</span><span class="n">$</span><span class="p">(</span><span class="n">PWD</span><span class="p">)</span><span class="w"> </span><span class="n">modules</span>
+<span class="nl">clean</span><span class="p">:</span>
+<span class="w">        </span><span class="n">make</span><span class="w"> </span><span class="o">-</span><span class="n">C</span><span class="w"> </span><span class="o">/</span><span class="n">lib</span><span class="o">/</span><span class="n">modules</span><span class="o">/</span><span class="n">$</span><span class="p">(</span><span class="n">KVERSION</span><span class="p">)</span><span class="o">/</span><span class="n">build</span><span class="w"> </span><span class="n">M</span><span class="o">=</span><span class="n">$</span><span class="p">(</span><span class="n">PWD</span><span class="p">)</span><span class="w"> </span><span class="n">clean</span>
+</pre></div>
+</div>
+<p>Once the compilation is complete, perform the following steps, in order, to run through the example. For each step, the details of the appropriate sections of mykfs.c are described.</p>
+<ol class="arabic simple">
+<li><p><a class="reference internal" href="#insert-mykfs-module-into-the-kernel">Insert mykfs module into the kernel</a></p></li>
+<li><p><a class="reference internal" href="#mount-the-mykfs-filesystem">Mount the mykfs filesystem</a></p></li>
+<li><p><a class="reference internal" href="#view-the-contents-of-the-hello-file">View the contents of the hello file</a></p></li>
+<li><p><a class="reference internal" href="#edit-the-hello-file-to-add-new-text">Edit the hello file to add new text</a></p></li>
+<li><p><a class="reference internal" href="#view-the-contents-of-the-counter-file">View the contents of the counter file</a></p></li>
+<li><p><a class="reference internal" href="#create-a-new-directory-in-the-mount-directory">Create a new directory in the mount directory</a></p></li>
+<li><p><a class="reference internal" href="#rename-the-new-directory">Rename the new directory</a></p></li>
+<li><p><a class="reference internal" href="#remove-the-renamed-directory">Remove the renamed directory</a></p></li>
+<li><p><a class="reference internal" href="#unmount-the-mykfs-filesystem">Unmount the mykfs filesystem</a></p></li>
+<li><p><a class="reference internal" href="#remove-the-mykfs-module-from-the-kernel">Remove the mykfs module from the kernel</a></p></li>
+</ol>
+</section>
+<section id="insert-mykfs-module-into-the-kernel">
+<h3>Insert mykfs module into the kernel<a class="headerlink" href="#insert-mykfs-module-into-the-kernel" title="Link to this heading">¶</a></h3>
+<p>In the directory where you compiled the mykfs.c example code, enter the following command to insert the mykfs module into the kernel.</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>sudo<span class="w"> </span>insmod<span class="w"> </span>mykfs.ko
+</pre></div>
+</div>
+<p>When the mykfs module is inserted into the kernel, the following init function in mykfs.c is run, which registers the mykfs filesystem with the kernel. The register_filesystem() function is passed the mykfs_fs_type structure.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="w">    </span><span class="k">static</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">__init</span><span class="w"> </span><span class="nf">myinit</span><span class="w"> </span><span class="p">(</span><span class="kt">void</span><span class="p">)</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">            </span><span class="n">iint</span><span class="w"> </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+
+<span class="hll"><span class="w">            </span><span class="n">ret</span><span class="o">=</span><span class="w"> </span><span class="n">register_filesystem</span><span class="p">(</span><span class="o">&amp;</span><span class="n">mykfs_fs_type</span><span class="p">);</span>
+</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">ret</span><span class="p">)</span>
+<span class="w">                    </span><span class="n">WARN_ON_ONCE</span><span class="p">(</span><span class="n">ret</span><span class="p">);</span>
+
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="n">ret</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>The mykfs_fs_type structure defines the type of filesystem and is of type, file_system_type, which is defined in linux/include/linux/fs.h.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">file_system_type</span><span class="w"> </span><span class="n">mykfs_fs_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="p">.</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;mykfs&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="p">.</span><span class="n">init_fs_context</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">init_myfc</span><span class="p">,</span>
+<span class="w">        </span><span class="p">.</span><span class="n">kill_sb</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kernfs_kill_sb</span><span class="p">,</span>
+<span class="w">        </span><span class="p">.</span><span class="n">fs_flags</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FS_USERNS_MOUNT</span><span class="p">,</span>
+<span class="p">};</span>
+</pre></div>
+</div>
+<p>where:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">name</span></code></dt><dd><p>Name of the filesystem, which in this example is defined as “mykfs”.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">init_fs_context</span></code></dt><dd><p>Name of the function to be called to initialize the context of the filesystem. This function is called during the mount process.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">kill_sb</span></code></dt><dd><p>The function to be called to kill the superblock. This function is called when the filesystem is unmounted.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">fs_flags</span></code></dt><dd><p>A set of flags that can be assigned to the filesystem. The FS_USERNS_MOUNT flag indicates that the filesystem can be mounted by the user namespace root.</p>
+</dd>
+</dl>
+<p>You can verify that the mykfs filesystem has been registered with the kernel, by looking at the /proc/filesystems file.</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>sudo<span class="w"> </span>cat<span class="w"> </span>/proc/filesystems
+<span class="hll"><span class="go">nodev   mykfs</span>
+</span></pre></div>
+</div>
+</section>
+<section id="mount-the-mykfs-filesystem">
+<h3>Mount the mykfs filesystem<a class="headerlink" href="#mount-the-mykfs-filesystem" title="Link to this heading">¶</a></h3>
+<p>Create a directory to be used as the mountpoint for the mykfs filesystem. In this example, the mkfsmount directory is created under the home directory.</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>dir
+<span class="go">Desktop    Downloads    linux-6.8.7.tar.xz  mykfsmount  Public  Templates</span>
+<span class="go">Documents  linux-6.8.7  Music               Pictures    snap    Videos</span>
+</pre></div>
+</div>
+<p>In the parent directory of your mount directory, mount the mykfs filesystem with the following command:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>sudo<span class="w"> </span>mount<span class="w"> </span>-t<span class="w"> </span>mykfs<span class="w"> </span>none<span class="w"> </span>&lt;your_mount_directory&gt;
+</pre></div>
+</div>
+<p>where:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">-t</span> <span class="pre">mykfs</span></code></dt><dd><p>Set the type of filesystem to mount. This example mounts the mykfs filesystem.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">none</span></code></dt><dd><p>Indicates that the filesystem is not associated with a device.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">&lt;your_mount_directory&gt;</span></code></dt><dd><p>The directory to use as the mountpoint for the filesystem.</p>
+</dd>
+</dl>
+<p>For example:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>sudo<span class="w"> </span>mount<span class="w"> </span>-t<span class="w"> </span>mykfs<span class="w"> </span>none<span class="w"> </span>mykfsmount
+</pre></div>
+</div>
+<p>When you enter the mount command, the function that is assigned to mykfs_fs_type -&gt; init_fs_context is automatically called.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">struct</span><span class="w"> </span><span class="nc">file_system_type</span><span class="w"> </span><span class="n">mykfs_fs_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="p">.</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FSNAME</span><span class="p">,</span>
+<span class="hll"><span class="w">        </span><span class="p">.</span><span class="n">init_fs_context</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">init_myfc</span><span class="p">,</span>
+</span><span class="w">        </span><span class="p">.</span><span class="n">kill_sb</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kernfs_kill_sb</span><span class="p">,</span>
+<span class="w">        </span><span class="p">.</span><span class="n">fs_flags</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FS_USERNS_MOUNT</span><span class="p">,</span>
+<span class="p">};</span>
+</pre></div>
+</div>
+<dl>
+<dt>The init_myfc() function performs the following:</dt><dd><ol class="arabic">
+<li><p>Allocates memory for the kernfs_filesystem_context (kfc) instance.</p>
+<blockquote>
+<div><div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="nf">init_myfc</span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">fs_context</span><span class="w"> </span><span class="o">*</span><span class="n">fc</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">        </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_node</span><span class="w"> </span><span class="o">*</span><span class="n">myrootkn</span><span class="p">;</span>
+<span class="w">        </span><span class="kt">int</span><span class="w"> </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+
+<span class="hll"><span class="w">        </span><span class="n">kfc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kmalloc</span><span class="p">(</span><span class="k">sizeof</span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_fs_context</span><span class="p">),</span><span class="w"> </span><span class="n">GFP_KERNEL</span><span class="p">);</span>
+</span><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">kfc</span><span class="p">)</span>
+<span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="o">-</span><span class="n">ENOMEM</span><span class="p">;</span>
+</pre></div>
+</div>
+</div></blockquote>
+</li>
+<li><p>Sets elements of the filesystem_context structure instance (fc).</p>
+<blockquote>
+<div><div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="n">fc</span><span class="o">-&gt;</span><span class="n">fs_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mykfs_fs_type</span><span class="p">;</span>
+<span class="n">fc</span><span class="o">-&gt;</span><span class="n">ops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="n">fs_ops</span><span class="p">;</span>
+<span class="n">fc</span><span class="o">-&gt;</span><span class="n">fs_private</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kfc</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>where:</p>
+<blockquote>
+<div><dl>
+<dt><code class="docutils literal notranslate"><span class="pre">fs_type</span></code></dt><dd><p>The type of filesystem is set to the mykfs_fs_type struture which has been previously defined.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">ops</span></code></dt><dd><p>The set of operations on the filesystem context which are invoked by the various stages of the mount operation. This example points to the fs_ops structure, which defines the get_tree operation.</p>
+<blockquote>
+<div><div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">fs_context_operations</span><span class="w"> </span><span class="n">fs_ops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w"> </span><span class="p">.</span><span class="n">get_tree</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">my_get_tree</span><span class="p">,</span>
+<span class="w"> </span><span class="p">};</span>
+</pre></div>
+</div>
+</div></blockquote>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">fs_private</span></code></dt><dd><p>Private information for this filesystem. In this example, we set this to an instance of the kernfs_fs_context structure, defined in linux/kernfs.h, which the various kernfs functions will set or read.</p>
+</dd>
+</dl>
+</div></blockquote>
+</div></blockquote>
+</li>
+<li><p>Creates the root of the mykfs filesystem. If there is an error, the root is destroyed. If the root is successfully created, then kernfs_root_to_node(), defined in linux/fs/kernfs/dir.c, is called to get the node associated with the root so it can be used as the parent node for the hello and counter files.</p>
+<blockquote>
+<div><div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="hll"><span class="n">mykfs_root</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kernfs_create_root</span><span class="p">(</span><span class="o">&amp;</span><span class="n">mykfs_sops</span><span class="p">,</span><span class="w"> </span><span class="n">KERNFS_ROOT_CREATE_DEACTIVATED</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">);</span>
+</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">IS_ERR</span><span class="p">(</span><span class="n">mykfs_root</span><span class="p">)</span><span class="w"> </span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">PTR_ERR</span><span class="p">(</span><span class="n">mykfs_root</span><span class="p">);</span>
+<span class="w">        </span><span class="k">goto</span><span class="w"> </span><span class="n">free_root_kfc</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="cm">/* Get the node associated with the root so it can be used as the parent</span>
+<span class="cm">*  node for creating the hello and counter files</span>
+<span class="cm">*/</span>
+
+<span class="hll"><span class="n">myrootkn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kernfs_root_to_node</span><span class="p">(</span><span class="n">mykfs_root</span><span class="p">);</span>
+</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">IS_ERR</span><span class="p">(</span><span class="n">myrootkn</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">PTR_ERR</span><span class="p">(</span><span class="n">myrootkn</span><span class="p">);</span>
+<span class="w">        </span><span class="k">goto</span><span class="w"> </span><span class="n">free_root_kfc</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The  kernfs_create_root() function, defined in /fs/kernfs/dir.c, creates the root of the filesystem and is passed three variables:</p>
+<blockquote>
+<div><dl>
+<dt><code class="docutils literal notranslate"><span class="pre">mykfs_sops</span></code></dt><dd><p>An instance of the kernfs_syscall_ops structure, defined in /linux/kernfs.h, that defines which functions are automatically called when you create, rename, or remove a directory in the filesystem.</p>
+<div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_syscall_ops</span><span class="w"> </span><span class="n">mykfs_sops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="p">.</span><span class="n">mkdir</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_mkdir</span><span class="p">,</span>
+<span class="w">                </span><span class="p">.</span><span class="n">rmdir</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_rmdir</span><span class="p">,</span>
+<span class="w">                </span><span class="p">.</span><span class="n">rename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_dir_rename</span><span class="p">,</span>
+<span class="w">        </span><span class="p">};</span>
+</pre></div>
+</div>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">KERNFS_ROOT_CREATE_DEACTIVATED</span></code></dt><dd><p>A flag that says to create the root node deactivated. There are other kernfs_root_flag values available, as defined in linux/kernfs.h. The root is created deactivated so that we can create the hello and counter files as children of the root.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">NULL</span></code></dt><dd><p>Opaque data for the root. In this example, there is none.</p>
+</dd>
+</dl>
+</div></blockquote>
+</div></blockquote>
+</li>
+<li><p>Creates the hello and counter files as children of the root node.</p>
+<blockquote>
+<div><div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="hll"><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">populate_directory</span><span class="p">(</span><span class="n">myrootkn</span><span class="p">);</span>
+</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">ret</span><span class="p">)</span>
+<span class="w">        </span><span class="k">goto</span><span class="w"> </span><span class="n">free_root_kfc</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>The populate_directory() function takes a pointer to the parent node and creates the hello and counter files as children.</p>
+<p>It creates a pointer(mfd) to the myfiledata struct.
+The mfd pointer is added to mykfs_files and the pointer to the parent kernfs_node is added to mykfs_directories.
+THese two arrays maintain the pointers for the diretories that are created, along with their associated mfd pointers assigned to their hello and counter files. MAXTPRS sets the maximum number of directories that can be created.</p>
+<div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="cp">#define MAXPTRS 10</span>
+
+<span class="cm">/* myfiledata pointers of hello/counter nodes for each directory*/</span>
+
+<span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">myfiledata</span><span class="w"> </span><span class="o">*</span><span class="n">mykfs_files</span><span class="p">[</span><span class="n">MAXPTRS</span><span class="p">];</span>
+
+<span class="cm">/* kernfs_node pointers for each directory that is created */</span>
+
+<span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_node</span><span class="w"> </span><span class="o">*</span><span class="n">mykfs_directories</span><span class="p">[</span><span class="n">MAXPTRS</span><span class="p">];</span>
+</pre></div>
+</div>
+<p>The  mfd-&gt;buffer is initialzed to a text string for the hello file and mfd-&gt;buffer_size is set to the length of the string assigned to mfd-&gt;buffer. In addition, mfd-&gt;read_count
+is set to 0 for the counter file. The pointer to mfd is then passed as private date for the hello and counter nodes.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="nf">populate_directory</span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_node</span><span class="w"> </span><span class="o">*</span><span class="n">parent</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">        </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_node</span><span class="w"> </span><span class="o">*</span><span class="n">hello_node</span><span class="p">,</span><span class="w"> </span><span class="o">*</span><span class="n">counter_node</span><span class="p">;</span>
+
+<span class="w">        </span><span class="kt">int</span><span class="w"> </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="hll"><span class="w">        </span><span class="k">struct</span><span class="w"> </span><span class="nc">myfiledata</span><span class="w"> </span><span class="o">*</span><span class="n">mfd</span><span class="p">;</span>
+</span><span class="hll"><span class="w">        </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="w"> </span><span class="o">*</span><span class="n">hello_text</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;This is the initial text in hello file</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">;</span>
+</span><span class="w">        </span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="p">;</span>
+
+<span class="w">        </span><span class="n">mfd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kmalloc</span><span class="p">(</span><span class="k">sizeof</span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">myfiledata</span><span class="p">),</span><span class="w"> </span><span class="n">GFP_KERNEL</span><span class="p">);</span>
+
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">mfd</span><span class="p">)</span>
+<span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="o">-</span><span class="n">ENOMEM</span><span class="p">;</span>
+
+<span class="w">        </span><span class="kt">unsigned</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">selected_element</span><span class="p">;</span>
+<span class="w">        </span><span class="kt">bool</span><span class="w"> </span><span class="n">added_node</span><span class="p">;</span>
+<span class="w">        </span><span class="n">added_node</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">false</span><span class="p">;</span>
+<span class="w">        </span><span class="n">selected_element</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+
+<span class="w">        </span><span class="cm">/* find next pointer in array to populate */</span>
+
+<span class="hll"><span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">MAXPTRS</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+</span><span class="hll"><span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">mykfs_files</span><span class="p">[</span><span class="n">i</span><span class="p">])</span><span class="w"> </span><span class="p">{</span>
+</span><span class="hll"><span class="w">                        </span><span class="n">mykfs_files</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mfd</span><span class="p">;</span>
+</span><span class="hll"><span class="w">                        </span><span class="n">mykfs_directories</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">parent</span><span class="p">;</span>
+</span><span class="hll"><span class="w">                        </span><span class="n">added_node</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="p">;</span>
+</span><span class="hll"><span class="w">                        </span><span class="n">selected_element</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">i</span><span class="p">;</span>
+</span><span class="hll"><span class="w">                        </span><span class="k">break</span><span class="p">;</span>
+</span><span class="hll"><span class="w">                </span><span class="p">}</span>
+</span><span class="hll"><span class="w">        </span><span class="p">}</span>
+</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">added_node</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">kfree</span><span class="p">(</span><span class="n">mfd</span><span class="p">);</span>
+<span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="o">-</span><span class="n">ENOMEM</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+
+
+<span class="w">        </span><span class="cm">/* Initialize the buffer element with the hello_text so that the</span>
+<span class="cm">        *  hello file will contain text when first opened. */</span>
+
+<span class="hll"><span class="w">        </span><span class="n">strcpy</span><span class="p">(</span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">buffer</span><span class="p">,</span><span class="w"> </span><span class="n">hello_text</span><span class="p">);</span>
+</span>
+<span class="hll"><span class="w">        </span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">buffer_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">strlen</span><span class="p">(</span><span class="n">hello_text</span><span class="p">);</span>
+</span>
+<span class="w">        </span><span class="cm">/* Initialize the read_count element to 0 so that the counter file</span>
+<span class="cm">        *  starts at 0 reads.*/</span>
+
+<span class="hll"><span class="w">        </span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">read_count</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+</span>
+<span class="w">        </span><span class="cm">/* Create the read-write hello file that contains a text string.</span>
+<span class="cm">        * You are able to read from and write to this file.</span>
+<span class="cm">        *  Pass mfd (a pointer to the myfiledata structure) that holds the</span>
+<span class="cm">        * character string for the file as the priv input parameter.</span>
+<span class="cm">        * The __kernfs_create_file() function then sets the priv element</span>
+<span class="cm">        * of the new node to mfd. */</span>
+
+<span class="hll"><span class="w">        </span><span class="n">hello_node</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">__kernfs_create_file</span><span class="p">(</span><span class="n">parent</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;hello&quot;</span><span class="p">,</span><span class="w"> </span><span class="mo">0666</span><span class="p">,</span><span class="w"> </span><span class="n">current_fsuid</span><span class="p">(),</span>
+</span><span class="hll"><span class="w">                </span><span class="n">current_fsgid</span><span class="p">(),</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mykfs_hello_kernfs_ops</span><span class="p">,</span>
+</span><span class="hll"><span class="w">                 </span><span class="n">mfd</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">);</span>
+</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">IS_ERR</span><span class="p">(</span><span class="n">hello_node</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">PTR_ERR</span><span class="p">(</span><span class="n">hello_node</span><span class="p">);</span>
+<span class="w">                </span><span class="k">goto</span><span class="w"> </span><span class="n">free_mfd</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+
+<span class="w">        </span><span class="cm">/* Create the read-only file that increments a counter every time you</span>
+<span class="cm">        * read it.</span>
+<span class="cm">        * Pass mfd (a pointer to the myfiledata structure) that holds the</span>
+<span class="cm">        * counter integer for the file as the priv input parameter.</span>
+<span class="cm">        * The __kernfs_create_file() function then sets the priv element</span>
+<span class="cm">        * of the new node to mfd. */</span>
+
+<span class="hll"><span class="w">        </span><span class="n">counter_node</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">__kernfs_create_file</span><span class="p">(</span><span class="n">parent</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;counter&quot;</span><span class="p">,</span><span class="w"> </span><span class="mo">0444</span><span class="p">,</span><span class="w"> </span><span class="n">current_fsuid</span><span class="p">(),</span>
+</span><span class="hll"><span class="w">                </span><span class="n">current_fsgid</span><span class="p">(),</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mykfs_counter_kernfs_ops</span><span class="p">,</span>
+</span><span class="hll"><span class="w">                </span><span class="n">mfd</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">);</span>
+</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">IS_ERR</span><span class="p">(</span><span class="n">counter_node</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">PTR_ERR</span><span class="p">(</span><span class="n">counter_node</span><span class="p">);</span>
+<span class="w">                </span><span class="k">goto</span><span class="w"> </span><span class="n">remove_hello_node</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+
+
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">ret</span><span class="p">;</span>
+
+<span class="w">        </span><span class="nl">remove_hello_node</span><span class="p">:</span>
+<span class="w">                </span><span class="n">kernfs_remove</span><span class="p">(</span><span class="n">hello_node</span><span class="p">);</span>
+
+<span class="w">        </span><span class="nl">free_mfd</span><span class="p">:</span>
+<span class="w">                </span><span class="n">mykfs_files</span><span class="p">[</span><span class="n">selected_element</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">                </span><span class="n">mykfs_directories</span><span class="p">[</span><span class="n">selected_element</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">                </span><span class="n">kfree</span><span class="p">(</span><span class="n">mfd</span><span class="p">);</span>
+<span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="n">ret</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The __kernfs_create_file() function used to create the hello and counter nodes is defined in linux/fs/kernfs/file.c and has the following inputs:</p>
+<blockquote>
+<div><dl>
+<dt><code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">kernfs_node</span> <span class="pre">*parent</span></code></dt><dd><p>The parent node.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">const</span> <span class="pre">char</span> <span class="pre">*name</span></code></dt><dd><p>The name of the file.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">umode_t</span> <span class="pre">mode</span></code></dt><dd><p>The file permissions mode. In this example, we are passing 0666 because the file is readable and writeable by everyone.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">kuid_t</span> <span class="pre">uid</span></code></dt><dd><p>uid of the file.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">kgid_t</span> <span class="pre">gid</span></code></dt><dd><p>gid of the file.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">loff_t</span> <span class="pre">size</span></code></dt><dd><p>Size of the file</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">const</span> <span class="pre">struct</span> <span class="pre">kernfs_ops</span> <span class="pre">*ops</span></code></dt><dd><blockquote>
+<div><p>The kernfs operations for the file are defined by an instance of the structure
+kernfs_ops (defined in linux/include/linux/kernfs.h). For the hello file,
+mykfs_hello_kernfs_ops is being passed which defines what functions to call to read and write the hello file.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="cm">/**</span>
+<span class="cm">* struct mykfs_hello_kernfs_ops- Structure that defines which functions to call for reading</span>
+<span class="cm">* and writing to a file. In this example, this structure is used for the hello files.</span>
+<span class="cm">* @write- the function to call when the user writes to and saves the file.</span>
+<span class="cm">* @read - the function to call when the user asks to read the contents of a file.</span>
+<span class="cm">* @prealloc - this is boolean and it must be set to true for read/write functions.</span>
+<span class="cm">*</span>
+<span class="cm">*/</span>
+<span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_ops</span><span class="w"> </span><span class="n">mykfs_hello_kernfs_ops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="p">.</span><span class="n">write</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_file_write</span><span class="p">,</span>
+<span class="w">        </span><span class="p">.</span><span class="n">read</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_hello_file_read</span><span class="p">,</span>
+<span class="w">        </span><span class="p">.</span><span class="n">prealloc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="p">,</span>
+<span class="p">};</span>
+</pre></div>
+</div>
+<p>In this example, the counter file illustrates the use of the sequsence file path when viewing the contents of a file.
+The seq_show element defines the function to be called to view the counter file. There is no write element included,
+as the counter file is created as read-only.</p>
+</div></blockquote>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_ops</span><span class="w"> </span><span class="n">mykfs_counter_kernfs_ops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="p">.</span><span class="n">seq_show</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_counter_seqfile_show</span><span class="p">,</span>
+<span class="p">};</span>
+</pre></div>
+</div>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">void</span> <span class="pre">*priv</span></code></dt><dd><p>Private data for the file. This is passed a pointer to the myfiledata structure that contains the contents of the file.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">const</span> <span class="pre">void</span> <span class="pre">*ns</span></code></dt><dd><p>Optional namespace tag for the file.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">lock_class_key</span> <span class="pre">*key</span></code></dt><dd><p>Lockdep key for the file’s active_ref, NULL to disable lockdep.</p>
+</dd>
+</dl>
+</div></blockquote>
+</div></blockquote>
+</li>
+</ol>
+<ol class="arabic" start="6">
+<li><p>Activate the root node and set the root element of the kernfs_fs_context structure to mykfs_root. The kernfs_activate() function is defined in linux/fs/kernfs/dir.c. It takes one input, a kernfs_node.</p>
+<blockquote>
+<div><div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="hll"><span class="n">kernfs_activate</span><span class="p">(</span><span class="n">myrootkn</span><span class="p">);</span>
+</span><span class="hll"><span class="n">kfc</span><span class="o">-&gt;</span><span class="n">root</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_root</span><span class="p">;</span>
+</span>
+<span class="k">return</span><span class="w"> </span><span class="n">ret</span><span class="p">;</span>
+
+<span class="nl">free_root_kfc</span><span class="p">:</span>
+<span class="w">        </span><span class="n">kernfs_destroy_root</span><span class="p">(</span><span class="n">mykfs_root</span><span class="p">);</span>
+<span class="w">        </span><span class="n">mykfs_root</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">NULL</span><span class="p">;</span>
+<span class="w">        </span><span class="n">kfree</span><span class="p">(</span><span class="n">kfc</span><span class="p">);</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">ret</span><span class="p">;</span>
+</pre></div>
+</div>
+</div></blockquote>
+</li>
+</ol>
+</dd>
+</dl>
+<p>Once init_myfc() is completed, the mount process calls the function assigned to fs_ops-&gt;get_tree, which in this example is my_get_tree().</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">fs_context_operations</span><span class="w"> </span><span class="n">fs_ops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="hll"><span class="w">        </span><span class="p">.</span><span class="n">get_tree</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">my_get_tree</span><span class="p">,</span>
+</span><span class="p">};</span>
+</pre></div>
+</div>
+<p>The my_get_tree() function calls kernfs_get_tree(), defined in /fs/kernfs/mount.c, which creates the mountable root and superblock for the filesystem, using the infomation stored in the filesystem context. If the superblock is successfully created, then kernfs_get_tree() sets kfc-&gt;new_sb_created to true.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="nf">my_get_tree</span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">fs_context</span><span class="w"> </span><span class="o">*</span><span class="n">fc</span><span class="p">)</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">int</span><span class="w"> </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+
+<span class="w">            </span><span class="n">kfc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">fc</span><span class="o">-&gt;</span><span class="n">fs_private</span><span class="p">;</span>
+
+<span class="hll"><span class="w">            </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kernfs_get_tree</span><span class="p">(</span><span class="n">fc</span><span class="p">);</span>
+</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">ret</span><span class="p">)</span>
+<span class="w">                    </span><span class="k">return</span><span class="w"> </span><span class="n">ret</span><span class="p">;</span>
+
+<span class="hll"><span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">kfc</span><span class="o">-&gt;</span><span class="n">new_sb_created</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+</span><span class="w">                    </span><span class="n">fc</span><span class="o">-&gt;</span><span class="n">root</span><span class="o">-&gt;</span><span class="n">d_sb</span><span class="o">-&gt;</span><span class="n">s_iflags</span><span class="w"> </span><span class="o">|=</span><span class="w"> </span><span class="n">SB_I_USERNS_VISIBLE</span><span class="p">;</span>
+
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="n">ret</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="view-the-contents-of-the-hello-file">
+<h3>View the contents of the hello file<a class="headerlink" href="#view-the-contents-of-the-hello-file" title="Link to this heading">¶</a></h3>
+<p>The hello file was created during the mount process. You can view the contents of the file using the cat command:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$ </span>cat<span class="w"> </span>hello
+<span class="go">This is the initial text in hello file</span>
+</pre></div>
+</div>
+<p>When you ask to read the contents of the hello file, the function assigned to mykfs_hello_kernfs_ops.read is automatically called.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_ops</span><span class="w"> </span><span class="n">mykfs_hello_kernfs_ops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="p">.</span><span class="n">write</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_file_write</span><span class="p">,</span>
+<span class="hll"><span class="w">        </span><span class="p">.</span><span class="n">read</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_hello_file_read</span><span class="p">,</span>
+</span><span class="w">        </span><span class="p">.</span><span class="n">prealloc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="p">,</span>
+<span class="p">};</span>
+</pre></div>
+</div>
+<p>The mykfs_hello_file)read() function receives the following input:</p>
+<blockquote>
+<div><dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">kernfs_open_file</span> <span class="pre">*of</span></code></dt><dd><p>A pointer to the open file.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">char</span> <span class="pre">*buf</span></code></dt><dd><p>The character buffer to which the function will copy the file contents for display in userspace.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">size_t</span> <span class="pre">nbytes</span></code></dt><dd><p>The numbuer of bytes being asked for by the read function.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">loff_t</span> <span class="pre">off</span></code></dt><dd><p>The offset into the file contents buffer from which to start copying nbytes into buf.</p>
+</dd>
+</dl>
+</div></blockquote>
+<p>The mykfs_hello_file)read() function reads the file buffer element of the myfiledata structure assigned to kn-&gt;priv.</p>
+<blockquote>
+<div><div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">ssize_t</span><span class="w"> </span><span class="nf">mykfs_hello_file_read</span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_open_file</span><span class="w"> </span><span class="o">*</span><span class="n">of</span><span class="p">,</span><span class="w"> </span><span class="kt">char</span><span class="w"> </span><span class="o">*</span><span class="n">buf</span><span class="p">,</span><span class="w"> </span><span class="kt">size_t</span><span class="w"> </span><span class="n">nbytes</span><span class="p">,</span><span class="w"> </span><span class="n">loff_t</span><span class="w"> </span><span class="n">off</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">        </span><span class="k">struct</span><span class="w"> </span><span class="nc">myfiledata</span><span class="w"> </span><span class="o">*</span><span class="n">mfd</span><span class="p">;</span>
+
+<span class="w">        </span><span class="kt">size_t</span><span class="w"> </span><span class="n">bytestocopy</span><span class="p">;</span>
+<span class="w">        </span><span class="n">mfd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">of</span><span class="o">-&gt;</span><span class="n">kn</span><span class="o">-&gt;</span><span class="n">priv</span><span class="p">;</span>
+<span class="w">        </span><span class="n">bytestocopy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">nbytes</span><span class="p">;</span>
+</pre></div>
+</div>
+</div></blockquote>
+<p>A check is made to ensure that the maximum size of the myfiledata-&gt;buffer does not exceed PAGE_SIZE. If the number of bytes requested is larger than PAGE_SIZE, the function will provide a warning
+and cap the maximum number of bytes to read to PAGE_SIZE. However, the write function already caps what is written into the file at (PAGE_SIZE -1) so this case should not occur.</p>
+<blockquote>
+<div><div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">bytestocopy</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">PAGE_SIZE</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">        </span><span class="n">bytestocopy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">PAGE_SIZE</span><span class="p">;</span>
+<span class="w">        </span><span class="n">WARN_ON_ONCE</span><span class="p">(</span><span class="n">bytestocopy</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">PAGE_SIZE</span><span class="p">);</span>
+<span class="p">}</span>
+
+<span class="k">if</span><span class="w"> </span><span class="p">((</span><span class="n">bytestocopy</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">off</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">buffer_size</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">bytestocopy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">buffer_size</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">off</span><span class="p">;</span>
+
+<span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">bytestocopy</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">buffer_size</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">        </span><span class="n">bytestocopy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">buffer_size</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="n">memcpy</span><span class="p">(</span><span class="n">buf</span><span class="p">,</span><span class="w"> </span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">buffer</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">off</span><span class="p">,</span><span class="w"> </span><span class="n">bytestocopy</span><span class="p">);</span>
+
+<span class="k">return</span><span class="w"> </span><span class="n">bytestocopy</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>}</p>
+</div></blockquote>
+<p>The first time through the function, the contents of myfiledata-&gt;buffer retrieved from of-&gt;kn-&gt;priv  is copied into buf, up to either the number of bytes in the myfiledata-&gt;buffer (bytestocopy) or nybytes, whichever is smaller. The function
+returns bytestocopy.</p>
+<p>This function is automatically called until all bytes that have been requested from the hello file buffer have been copied into buf. Each time the function is called, the kernfs API automatically increases the offset by the number of bytes copied into buf.</p>
+</section>
+<section id="edit-the-hello-file-to-add-new-text">
+<h3>Edit the hello file to add new text<a class="headerlink" href="#edit-the-hello-file-to-add-new-text" title="Link to this heading">¶</a></h3>
+<p>You can also edit the hello file to add your own text. In this example, the text, “this is my new test I added into the hello file!!” is being added.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="n">$</span><span class="w"> </span><span class="n">vi</span><span class="w"> </span><span class="n">hello</span>
+</pre></div>
+</div>
+<p>When you call to edit the file, first, the file you have defined to read the contents of the hello file is called. Once you save the updated file contents, the function assigned to mykfs_kernfs_ops.write is automatically called.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_ops</span><span class="w"> </span><span class="n">mykfs_hello_kernfs_ops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="hll"><span class="w">        </span><span class="p">.</span><span class="n">write</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_file_write</span><span class="p">,</span>
+</span><span class="hll"><span class="w">        </span><span class="p">.</span><span class="n">read</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_hello_file_read</span><span class="p">,</span>
+</span><span class="w">        </span><span class="p">.</span><span class="n">prealloc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="p">,</span>
+<span class="p">};</span>
+</pre></div>
+</div>
+<p>The mykfs_file_write() is passed a pointer to a kernfs_open_file structure, defined in /fs/kernfs/file.c. The kernfs API takes the updated text in the hello file shown in the console (userspace) and copies it into a buffer (buf) in kernel space. Then memcpy() is used to copy the contents from buf to the myfildedata structure (mfd) of the hello file.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">ssize_t</span><span class="w"> </span><span class="nf">mykfs_file_write</span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_open_file</span><span class="w"> </span><span class="o">*</span><span class="n">of</span><span class="p">,</span><span class="w"> </span><span class="kt">char</span><span class="w"> </span><span class="o">*</span><span class="n">buf</span><span class="p">,</span><span class="w"> </span><span class="kt">size_t</span><span class="w"> </span><span class="n">nbytes</span><span class="p">,</span><span class="w"> </span><span class="n">loff_t</span><span class="w"> </span><span class="n">off</span><span class="p">)</span>
+<span class="p">{</span>
+
+<span class="w">        </span><span class="cm">/* The kernfs_open_file structure includes the kernfs_node and the kernfs_node element includes</span>
+<span class="hll"><span class="cm">        *  the priv element which is assigned to a myfiledata structure.</span>
+</span><span class="cm">        */</span>
+
+<span class="w">        </span><span class="k">struct</span><span class="w"> </span><span class="nc">myfiledata</span><span class="w"> </span><span class="o">*</span><span class="n">mfd</span><span class="p">;</span>
+
+<span class="w">        </span><span class="n">mfd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">of</span><span class="o">-&gt;</span><span class="n">kn</span><span class="o">-&gt;</span><span class="n">priv</span><span class="p">;</span>
+
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">((</span><span class="n">nbytes</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">off</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">PAGE_SIZE</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">WARN_ON_ONCE</span><span class="p">((</span><span class="n">nbytes</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">off</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">PAGE_SIZE</span><span class="p">);</span>
+<span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="n">nbytes</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="n">memcpy</span><span class="p">(</span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">buffer</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">off</span><span class="p">,</span><span class="w"> </span><span class="n">buf</span><span class="p">,</span><span class="w"> </span><span class="n">nbytes</span><span class="p">);</span>
+
+<span class="w">        </span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">buffer_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">nbytes</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">off</span><span class="p">;</span>
+
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">nbytes</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>You can verify that your text was saved in the file by viewing the contents of the file again. In this examaple, “this is my new text I added into the hello file!!” was added.</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>cat<span class="w"> </span>hello
+<span class="go">This is the initial text in hello file</span>
+
+<span class="go">this is my new text I added into the hello file!!</span>
+</pre></div>
+</div>
+</section>
+<section id="view-the-contents-of-the-counter-file">
+<h3>View the contents of the counter file<a class="headerlink" href="#view-the-contents-of-the-counter-file" title="Link to this heading">¶</a></h3>
+<p>When you call to view the contents of the counter file, the function you have defined in the mykfs_counter_kernfs_ops structure to read the contents of the counter file is called. In this example the mykfs_counter_seqfile_show() function is called.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_ops</span><span class="w"> </span><span class="n">mykfs_counter_kernfs_ops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="hll"><span class="w">        </span><span class="p">.</span><span class="n">seq_show</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_counter_seqfile_show</span><span class="p">,</span>
+</span><span class="p">};</span>
+</pre></div>
+</div>
+<p>The mykfs_counter_seqfile_show() function first gets the pointer to the myfiledata structure associated with the counter file node. The priv element of the counter file node was set to the myfiledata structure
+when the counter file was created. The myfiledata-&gt;read_count element contains the integer counter. The counter is incremented by one and then the text is displayed to the console using seq_printf(). The seq_printf() function is defined in linux/seq_file.h.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="nf">mykfs_counter_seqfile_show</span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">seq_file</span><span class="w"> </span><span class="o">*</span><span class="n">m</span><span class="p">,</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="o">*</span><span class="n">arg</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">        </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_open_file</span><span class="w"> </span><span class="o">*</span><span class="n">of</span><span class="p">;</span>
+
+<span class="w">        </span><span class="n">of</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">m</span><span class="o">-&gt;</span><span class="n">private</span><span class="p">;</span>
+
+<span class="w">        </span><span class="k">struct</span><span class="w"> </span><span class="nc">myfiledata</span><span class="w"> </span><span class="o">*</span><span class="n">mfd</span><span class="p">;</span>
+
+<span class="w">        </span><span class="n">mfd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">of</span><span class="o">-&gt;</span><span class="n">kn</span><span class="o">-&gt;</span><span class="n">priv</span><span class="p">;</span>
+
+<span class="w">        </span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">read_count</span><span class="o">++</span><span class="p">;</span>
+
+<span class="w">        </span><span class="n">seq_printf</span><span class="p">(</span><span class="n">m</span><span class="p">,</span><span class="s">&quot;This file has been read %d times</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">mfd</span><span class="o">-&gt;</span><span class="n">read_count</span><span class="p">);</span>
+
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="create-a-new-directory-in-the-mount-directory">
+<h3>Create a new directory in the mount directory<a class="headerlink" href="#create-a-new-directory-in-the-mount-directory" title="Link to this heading">¶</a></h3>
+<p>To create a new directory, go to your mount directory and enter the following to create the “test” subdirectory:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>sudo<span class="w"> </span>mkdir<span class="w"> </span><span class="nb">test</span>
+</pre></div>
+</div>
+<p>The function that is assigned to the mykfs_sops.mkdir structure element is automatically called.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_syscall_ops</span><span class="w"> </span><span class="n">mykfs_sops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="hll"><span class="w">        </span><span class="p">.</span><span class="n">mkdir</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_mkdir</span><span class="p">,</span>
+</span><span class="w">        </span><span class="p">.</span><span class="n">rmdir</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_rmdir</span><span class="p">,</span>
+<span class="w">        </span><span class="p">.</span><span class="n">rename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_dir_rename</span><span class="p">,</span>
+<span class="p">};</span>
+</pre></div>
+</div>
+<p>The mykfs_mkdir() function is passed the parent node, the name of the new directory, and the mode. The kernfs_create_dir_ns() function, defined in /fs/kernfs/dir.c, is called to create the new node for the directory. After the new directory kernfs_node is created,  the populate_directory() function, defined previously, is called to create two files. The “hello” file has permissions for reading and writing, but the “counter” file is read-only. The new directory node is activated using kernfs_activate(), which is also defined in /fs/kernfs/dir.c.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="nf">mykfs_mkdir</span><span class="w"> </span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_node</span><span class="w"> </span><span class="o">*</span><span class="n">parent_kn</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="w"> </span><span class="o">*</span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">umode_t</span><span class="w"> </span><span class="n">mode</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">        </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_node</span><span class="w"> </span><span class="o">*</span><span class="n">kn</span><span class="p">;</span>
+
+<span class="w">        </span><span class="kt">int</span><span class="w"> </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+
+<span class="w">        </span><span class="cm">/* create the new directory */</span>
+
+<span class="hll"><span class="w">        </span><span class="n">kn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kernfs_create_dir_ns</span><span class="p">(</span><span class="n">parent_kn</span><span class="p">,</span><span class="w"> </span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">mode</span><span class="p">,</span><span class="w"> </span><span class="n">current_fsuid</span><span class="p">(),</span><span class="w"> </span><span class="n">current_fsgid</span><span class="p">(),</span><span class="w"> </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">);</span>
+</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">IS_ERR</span><span class="p">(</span><span class="n">kn</span><span class="p">))</span>
+<span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="n">PTR_ERR</span><span class="p">(</span><span class="n">kn</span><span class="p">);</span>
+
+<span class="hll"><span class="w">        </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">populate_directory</span><span class="p">(</span><span class="n">kn</span><span class="p">);</span>
+</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">ret</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">kernfs_remove</span><span class="p">(</span><span class="n">kn</span><span class="p">);</span>
+<span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="n">ret</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+
+<span class="w">        </span><span class="cm">/*activate the new directory */</span>
+<span class="hll"><span class="w">        </span><span class="n">kernfs_activate</span><span class="p">(</span><span class="n">kn</span><span class="p">);</span>
+</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">ret</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="rename-the-new-directory">
+<h3>Rename the new directory<a class="headerlink" href="#rename-the-new-directory" title="Link to this heading">¶</a></h3>
+<p>To rename the new directory, go to your mount directory and enter the following to rename test to test2:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>sudo<span class="w"> </span>mv<span class="w"> </span><span class="nb">test</span><span class="w"> </span>test2
+</pre></div>
+</div>
+<p>When you enter the mv command, the function that is assigned to the mykfs_sops.rename structure element is automatically called.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_syscall_ops</span><span class="w"> </span><span class="n">mykfs_sops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="p">.</span><span class="n">mkdir</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_mkdir</span><span class="p">,</span>
+<span class="w">        </span><span class="p">.</span><span class="n">rmdir</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_rmdir</span><span class="p">,</span>
+<span class="hll"><span class="w">        </span><span class="p">.</span><span class="n">rename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_dir_rename</span><span class="p">,</span>
+</span><span class="p">};</span>
+</pre></div>
+</div>
+<p>The mykfs_dir_rename() function is passed the directory node, the node of the new parent, which mykfs_dir_rename() requires to be equal to the current parent, and the new name of the directory. The kernfs_break_active_protection() function releases the active reference of the node the caller is
+holding. Then the kernfs_rename_ns() function is called to rename the directory. Finally, the kernfs_unbreak_active_protection() function is called to restore the active reference. All three kernfs functions are defined in /fs/kernfs/dir.c.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="nf">mykfs_dir_rename</span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_node</span><span class="w"> </span><span class="o">*</span><span class="n">kn</span><span class="p">,</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_node</span><span class="w"> </span><span class="o">*</span><span class="n">new_parent</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="w"> </span><span class="o">*</span><span class="n">new_name_str</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">        </span><span class="kt">int</span><span class="w"> </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">kn</span><span class="o">-&gt;</span><span class="n">parent</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">new_parent</span><span class="p">)</span>
+<span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="o">-</span><span class="n">EINVAL</span><span class="p">;</span>
+
+<span class="w">        </span><span class="cm">/* release protection of node being renamed and its parent */</span>
+
+<span class="w">        </span><span class="n">kernfs_break_active_protection</span><span class="p">(</span><span class="n">new_parent</span><span class="p">);</span>
+<span class="w">        </span><span class="n">kernfs_break_active_protection</span><span class="p">(</span><span class="n">kn</span><span class="p">);</span>
+
+<span class="w">        </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kernfs_rename_ns</span><span class="p">(</span><span class="n">kn</span><span class="p">,</span><span class="w"> </span><span class="n">new_parent</span><span class="p">,</span><span class="w"> </span><span class="n">new_name_str</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">);</span>
+
+<span class="w">        </span><span class="cm">/* restore protection of the renamed node and its parent */</span>
+<span class="w">        </span><span class="n">kernfs_unbreak_active_protection</span><span class="p">(</span><span class="n">kn</span><span class="p">);</span>
+<span class="w">        </span><span class="n">kernfs_unbreak_active_protection</span><span class="p">(</span><span class="n">new_parent</span><span class="p">);</span>
+
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">ret</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="remove-the-renamed-directory">
+<h3>Remove the renamed directory<a class="headerlink" href="#remove-the-renamed-directory" title="Link to this heading">¶</a></h3>
+<p>To remove the renamed directory, test2, go to your mount directory and enter:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>sudo<span class="w"> </span>rmdir<span class="w"> </span>test2
+</pre></div>
+</div>
+<p>When you enter the rmdir command, the function that is assigned to mykfs_sops.rmdir is automatically called.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_syscall_ops</span><span class="w"> </span><span class="n">mykfs_sops</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="p">.</span><span class="n">mkdir</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_mkdir</span><span class="p">,</span>
+<span class="hll"><span class="w">        </span><span class="p">.</span><span class="n">rmdir</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_rmdir</span><span class="p">,</span>
+</span><span class="w">        </span><span class="p">.</span><span class="n">rename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mykfs_dir_rename</span><span class="p">,</span>
+<span class="p">};</span>
+</pre></div>
+</div>
+<p>The mykfs_rmdir() function is passed the node for the test2 directory. First the kernfs_break_active_protection() function releases the active reference of the node that the caller is holding. The function then trys to find the pointer for the directory and the corresponding mfd pointer associated with the hello and counter files. If found, the array element is set to 0 to allow creation of another directory, and the memory for mfd is freed. Then the kernfs_remove() function is called to recursively remove the node and all of its subdirectories and files. Finally, the kernfs_unbreak_active_protection() function is called to restore the active reference. All three kernfs functions are defined in linux/fs/kernfs/dir.c.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="nf">mykfs_rmdir</span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">kernfs_node</span><span class="w"> </span><span class="o">*</span><span class="n">kn</span><span class="p">)</span>
+<span class="p">{</span>
+
+<span class="w">        </span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="p">;</span>
+<span class="w">        </span><span class="kt">bool</span><span class="w"> </span><span class="n">found_ptr</span><span class="p">;</span>
+
+<span class="w">        </span><span class="n">found_ptr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">false</span><span class="p">;</span>
+
+<span class="w">        </span><span class="n">kernfs_break_active_protection</span><span class="p">(</span><span class="n">kn</span><span class="p">);</span>
+
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">MAXPTRS</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">mykfs_directories</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">kn</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="n">kfree</span><span class="p">(</span><span class="n">mykfs_files</span><span class="p">[</span><span class="n">i</span><span class="p">]);</span>
+<span class="w">                        </span><span class="n">mykfs_files</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">                        </span><span class="n">mykfs_directories</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">                        </span><span class="n">found_ptr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="p">;</span>
+<span class="w">                        </span><span class="k">break</span><span class="p">;</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="n">WARN_ON_ONCE</span><span class="p">(</span><span class="o">!</span><span class="n">found_ptr</span><span class="p">);</span>
+
+<span class="w">        </span><span class="n">kernfs_remove</span><span class="p">(</span><span class="n">kn</span><span class="p">);</span>
+<span class="w">        </span><span class="n">kernfs_unbreak_active_protection</span><span class="p">(</span><span class="n">kn</span><span class="p">);</span>
+
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="unmount-the-mykfs-filesystem">
+<h3>Unmount the mykfs filesystem<a class="headerlink" href="#unmount-the-mykfs-filesystem" title="Link to this heading">¶</a></h3>
+<p>You can now unmount the mykfs filesystem, for example:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>sudo<span class="w"> </span>umount<span class="w"> </span>mykfsmount
+</pre></div>
+</div>
+<p>Unmounting the filesystem automatically calls the function assigned to mykfs_fs_type.kill_sb. This example calls kernfs_kill_sb() directly. The kernfs_kill_sb() function is defined in fs/kernfs/mount.c and is used to remove the superblock. You can also make your own function that calls kernfs_kill_sb(), if you have other clean-up to occur during the dismount.</p>
+<div class="highlight-C notranslate"><div class="highlight"><pre><span></span><span class="w">        </span><span class="k">static</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">file_system_type</span><span class="w"> </span><span class="n">mykfs_fs_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="p">.</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;mykfs&quot;</span><span class="p">,</span>
+<span class="w">                </span><span class="p">.</span><span class="n">init_fs_context</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">init_myfc</span><span class="p">,</span>
+<span class="hll"><span class="w">                </span><span class="p">.</span><span class="n">kill_sb</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kernfs_kill_sb</span><span class="p">,</span>
+</span><span class="w">                </span><span class="p">.</span><span class="n">fs_flags</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FS_USERNS_MOUNT</span><span class="p">,</span>
+<span class="w">        </span><span class="p">};</span>
+</pre></div>
+</div>
+</section>
+<section id="remove-the-mykfs-module-from-the-kernel">
+<h3>Remove the mykfs module from the kernel<a class="headerlink" href="#remove-the-mykfs-module-from-the-kernel" title="Link to this heading">¶</a></h3>
+<p>To remove the mykfs module from the kernel, enter the following command:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$</span>sudo<span class="w"> </span>rmmod<span class="w"> </span>mykfs
+</pre></div>
+</div>
+<p>When you remove the module, the exit function, say_goodbye, is automatically called. This function frees the memory used by the mfd pointers, as well as the array of directory pointers. It destroys the root, frees the kernfs filesystem context, and unregisters the mykfs filesystem.</p>
+<div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="n">__exit</span><span class="w"> </span><span class="nf">say_goodbye</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">        </span><span class="n">free_mfd</span><span class="p">();</span>
+<span class="w">        </span><span class="n">kernfs_destroy_root</span><span class="p">(</span><span class="n">mykfs_root</span><span class="p">);</span>
+<span class="w">        </span><span class="n">kfree</span><span class="p">(</span><span class="n">kfc</span><span class="p">);</span>
+<span class="w">        </span><span class="n">unregister_filesystem</span><span class="p">(</span><span class="o">&amp;</span><span class="n">mykfs_fs_type</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The free_mfd() function goes throu the mykfs_files and mykfs_directories and sets frees all of the memory and resets array elements to 0.</p>
+<div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">free_mfd</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">        </span><span class="k">while</span><span class="p">(</span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">MAXPTRS</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">mykfs_files</span><span class="p">[</span><span class="n">i</span><span class="p">])</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="n">kfree</span><span class="p">(</span><span class="n">mykfs_files</span><span class="p">[</span><span class="n">i</span><span class="p">]);</span>
+<span class="w">                        </span><span class="n">mykfs_files</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">                        </span><span class="n">mykfs_directories</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">                </span><span class="n">i</span><span class="o">++</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="index.html">How to Easily Create a Simple Filesystem Using the Kernfs API</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="index.html">Documentation overview</a><ul>
+  </ul></li>
+</ul>
+</div>
+<div id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</div>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2024, Millie.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 7.2.6</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+      |
+      <a href="_sources/run_mykfs_example.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>
